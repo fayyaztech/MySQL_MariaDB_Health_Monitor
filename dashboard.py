@@ -99,7 +99,7 @@ def api_processlist():
 
 if __name__ == "__main__":
     import datetime
-    host = "127.0.0.1"
-    port = 5000
+    host = config.DASHBOARD_HOST
+    port = config.DASHBOARD_PORT
     print(f"Dashboard: http://{host}:{port}  (data dir: {config.DATA_DIR})")
     app.run(host=host, port=port, debug=False, threaded=True)
