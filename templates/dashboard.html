@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MySQL Health Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f1420; --card:#1a2130; --card2:#232c3d; --border:#2c3a50;
+    --txt:#dde3ee; --muted:#8b96ab; --accent:#4ea1ff; --bad:#ff5d5d; --good:#3ddc84;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);font-family:"Segoe UI",system-ui,-apple-system,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#141b2a,#101624);position:sticky;top:0;z-index:5}
+  header h1{font-size:18px;margin:0;letter-spacing:.4px}
+  header .sub{color:var(--muted);font-size:12px}
+  #clock{margin-left:auto;font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .wrap{max-width:1500px;margin:0 auto;padding:16px 22px 40px}
+  #alarm{display:none;background:#3a1414;border:1px solid var(--bad);color:#ffb3b3;
+    padding:12px 16px;border-radius:8px;margin-bottom:16px;font-weight:600}
+  #alarm.show{display:block}
+  #waiting{color:var(--muted);text-align:center;padding:60px 0;font-size:15px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px}
+  .kpi{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+  .kpi .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .kpi .val{font-size:22px;font-weight:700;margin-top:4px;font-variant-numeric:tabular-nums}
+  .kpi .val.warn{color:var(--bad)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--muted);font-weight:600;letter-spacing:.4px}
+  .chart{position:relative;height:200px}
+  h3{font-size:14px;color:var(--muted);margin:26px 0 10px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--border);white-space:nowrap}
+  th{color:var(--muted);font-weight:600;background:var(--card2)}
+  td.info{max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-family:ui-monospace,monospace}
+  .badge{display:inline-block;background:#2a1212;color:var(--bad);border:1px solid var(--bad);border-radius:20px;padding:2px 9px;font-size:11px;font-weight:700}
+  @media (max-width:700px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐬 MySQL Health Monitor</h1>
+  <span class="sub" id="sub">no data yet</span>
+  <span id="clock"></span>
+</header>
+
+<div class="wrap">
+  <div id="alarm">⚠ HIGH LOAD: <span id="alarm-txt"></span></div>
+  <div id="waiting">Waiting for the monitor to produce data…<br>
+    <small style="color:#5d6a80">Start it with <code>.venv/bin/python3 monitor.py</code></small>
+  </div>
+
+  <div id="content" style="display:none">
+    <div class="kpis" id="kpis"></div>
+
+    <h3>📈 MySQL &amp; system</h3>
+    <div class="grid" id="charts"></div>
+
+    <h3>⏱ Long-running queries (current)</h3>
+    <table id="longq"><thead><tr><th>Id</th><th>User</th><th>DB</th><th>Secs</th><th>State</th><th>Query</th></tr></thead><tbody></tbody></table>
+    <div id="noq" style="color:var(--muted);font-size:13px;margin-top:8px">No long-running queries right now.</div>
+  </div>
+</div>
+
+<script>
+const SPECS = [
+  {id:'cpu_load', y:'% / load', series:[
+    {key:'cpu_pct',   label:'CPU %',    color:'#e74c3c'},
+    {key:'load1',     label:'Load 1m',  color:'#f39c12'},
+    {key:'load5',     label:'Load 5m',  color:'#f1c40f'},
+  ]},
+  {id:'ram', y:'MB', series:[
+    {key:'ram_used_mb', label:'RAM used',  color:'#3498db'},
+    {key:'ram_free_mb', label:'RAM free',  color:'#2ecc71'},
+    {key:'swap_used_mb',label:'Swap used', color:'#9b59b6'},
+  ]},
+  {id:'connections', y:'conns', series:[
+    {key:'threads_connected',   label:'Connected', color:'#3498db'},
+    {key:'threads_running',     label:'Running',   color:'#e74c3c'},
+    {key:'max_used_connections',label:'Max used',  color:'#95a5a6'},
+  ]},
+  {id:'queries', y:'per sec', series:[
+    {key:'queries_per_sec',   label:'Queries/s',   color:'#3498db'},
+    {key:'questions_per_sec', label:'Questions/s', color:'#e67e22'},
+  ]},
+  {id:'slow', y:'count', series:[
+    {key:'slow_queries_delta', label:'Slow delta', color:'#e74c3c'},
+    {key:'slow_queries_total', label:'Slow total', color:'#95a5a6'},
+  ]},
+  {id:'buffer', y:'MB', series:[
+    {key:'buffer_pool_used_mb', label:'Buffer used', color:'#3498db'},
+    {key:'buffer_pool_free_mb', label:'Buffer free', color:'#2ecc71'},
+  ]},
+  {id:'tmp', y:'count', series:[
+    {key:'created_tmp_disk_tables', label:'Disk tmp tables', color:'#e74c3c'},
+    {key:'created_tmp_tables',      label:'All tmp tables', color:'#95a5a6'},
+  ]},
+  {id:'locks', y:'count', series:[
+    {key:'row_lock_waits',   label:'Row lock waits',   color:'#e74c3c'},
+    {key:'row_lock_time_ms', label:'Lock time (ms)',   color:'#f39c12'},
+  ]},
+  {id:'network', y:'KB/s', series:[
+    {key:'bytes_received_kbs', label:'Received', color:'#2ecc71'},
+    {key:'bytes_sent_kbs',     label:'Sent',     color:'#3498db'},
+  ]},
+  {id:'disk', y:'MB/s', series:[
+    {key:'disk_read_mbps',  label:'Read',  color:'#3498db'},
+    {key:'disk_write_mbps', label:'Write', color:'#e74c3c'},
+  ]},
+];
+
+const KPIS = [
+  {id:'threads_running',  label:'Threads running'},
+  {id:'threads_connected',label:'Threads connected'},
+  {id:'queries_per_sec',  label:'Queries / sec', dec:1},
+  {id:'slow_queries_delta',label:'Slow / sec', dec:1},
+  {id:'cpu_pct',          label:'CPU %'},
+  {id:'load1',            label:'Load 1m', dec:2},
+  {id:'ram_used_mb',      label:'RAM used (MB)'},
+  {id:'buffer_pool_used_mb', label:'Buffer used (MB)'},
+];
+
+const charts = {};
+let lastLive = null;
+
+// ---- build the chart grid once ----
+const grid = document.getElementById('charts');
+for (const spec of SPECS) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `<h2>${spec.id.replace(/_/g,' ').toUpperCase()}</h2><div class="chart"><canvas id="c_${spec.id}"></canvas></div>`;
+  grid.appendChild(card);
+  const ctx = document.getElementById('c_' + spec.id).getContext('2d');
+  charts[spec.id] = new Chart(ctx, {
+    type: 'line',
+    data: { labels: [], datasets: spec.series.map(s => ({
+      label: s.label, data: [], borderColor: s.color, backgroundColor: s.color,
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: .25, fill: false,
+    })) },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: {duration: 0},
+      plugins: { legend: { labels: { color:'#8b96ab', boxWidth:10, font:{size:10} } } },
+      scales: {
+        x: { ticks:{ color:'#5d6a80', maxTicksLimit: 8, maxRotation:0 }, grid:{ color:'#1d2636' } },
+        y: { ticks:{ color:'#5d6a80' }, grid:{ color:'#1d2636' }, title:{display:true,text:spec.y,color:'#5d6a80',font:{size:10}} },
+      },
+    },
+  });
+}
+
+// ---- KPI cards ----
+const kpiBox = document.getElementById('kpis');
+for (const k of KPIS) {
+  const el = document.createElement('div');
+  el.className = 'kpi';
+  el.innerHTML = `<div class="lbl">${k.label}</div><div class="val" id="kpi_${k.id}">–</div>`;
+  kpiBox.appendChild(el);
+}
+
+function fmt(v, dec=0){ if(v===undefined||v===null||v===''||isNaN(v)) return '–'; return Number(v).toFixed(dec); }
+
+function renderKPIs(live){
+  if(!live) return;
+  const cur = live.current || {};
+  for (const k of KPIS) {
+    const el = document.getElementById('kpi_' + k.id);
+    const v = cur[k.id];
+    el.textContent = fmt(v, k.dec||0);
+    el.classList.toggle('warn', (k.id==='threads_running' && v > (live.threshold||10)));
+  }
+}
+
+function renderCharts(history){
+  const labels = history.map(r => (r.timestamp||'').slice(11));
+  for (const spec of SPECS) {
+    const c = charts[spec.id];
+    c.data.labels = labels;
+    spec.series.forEach((s, i) => {
+      c.data.datasets[i].data = history.map(r => r[s.key] === undefined ? null : r[s.key]);
+    });
+    c.update();
+  }
+}
+
+function renderAlarm(live){
+  const b = document.getElementById('alarm');
+  if (live && live.alarm) {
+    document.getElementById('alarm-txt').textContent =
+      `Threads_running = ${live.current?.threads_running} (threshold ${live.threshold}) at ${live.timestamp}`;
+    b.classList.add('show');
+  } else b.classList.remove('show');
+}
+
+function renderLongQueries(live){
+  const qs = (live && live.long_queries) || [];
+  const tb = document.querySelector('#longq tbody');
+  tb.innerHTML = '';
+  document.getElementById('noq').style.display = qs.length ? 'none' : 'block';
+  for (const q of qs) {
+    const tr = document.createElement('tr');
+    for (const k of ['id','user','db','time','state','info']) {
+      const td = document.createElement('td');
+      td.textContent = q[k] ?? '–';
+      if (k==='info') td.className = 'info';
+      if (k==='time') { td.textContent = q[k]+'s'; }
+      tr.appendChild(td);
+    }
+    tb.appendChild(tr);
+  }
+}
+
+async function refresh(){
+  try {
+    const res = await fetch('/api/data', {cache:'no-store'});
+    const d = await res.json();
+    lastLive = d.live;
+    document.getElementById('sub').textContent =
+      d.metric_file ? `file: ${d.metric_file} · ${d.history.length} samples` : 'no CSV yet';
+    document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+    if (!d.live && d.history.length === 0) {
+      document.getElementById('waiting').style.display = 'block';
+      document.getElementById('content').style.display = 'none';
+      return;
+    }
+    document.getElementById('waiting').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    renderKPIs(d.live);
+    renderCharts(d.history);
+    renderAlarm(d.live);
+    renderLongQueries(d.live);
+  } catch (e) {
+    document.getElementById('sub').textContent = 'dashboard offline? ' + e;
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[Unit]
+Description=MySQL / MariaDB health monitor (samples to CSV, live dashboard feed)
+After=network-online.target mariadb.service mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# This user is the owner of the server_monitor folder.
+User=sycet-pc
+WorkingDirectory=/home/sycet-pc/PythonProject/server_monitor
+ExecStart=/home/sycet-pc/PythonProject/server_monitor/.venv/bin/python3 /home/sycet-pc/PythonProject/server_monitor/monitor.py
+Restart=always
+RestartSec=5
+# Write logs to the journal (view with: journalctl -u mysql-monitor -f)
+StandardOutput=journal
+StandardError=journal
+# Do not start sampling until the DB is reachable enough (keeps service stable
+# across DB restarts; monitor.py also retries connections on its own).
+TimeoutStartSec=30
+
+[Install]
+WantedBy=multi-user.target
