@@ -63,6 +63,8 @@ def read_history(path, limit):
         for r in csv.DictReader(f):
             out = {}
             for k, v in r.items():
+                if k is None:          # extra columns beyond the CSV header →
+                    continue           # guard against header/schema mismatch
                 out[k] = float(v) if k in NUMERIC_COLUMNS and v not in ("", None) else v
             rows.append(out)
     return rows[-limit:]

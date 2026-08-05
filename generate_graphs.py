@@ -30,7 +30,9 @@ NUMERIC = {
     "ram_used_mb", "ram_free_mb", "swap_used_mb",
     "disk_read_mbps", "disk_write_mbps",
     "threads_connected", "threads_running", "max_used_connections", "max_connections",
-    "questions_per_sec", "queries_per_sec", "slow_queries_total", "slow_queries_delta",
+    "questions_per_sec", "queries_per_sec",
+    "com_select_per_sec", "com_insert_per_sec", "com_update_per_sec", "com_delete_per_sec",
+    "slow_queries_total", "slow_queries_delta",
     "bytes_received_kbs", "bytes_sent_kbs",
     "buffer_pool_used_mb", "buffer_pool_free_mb", "buffer_pool_dirty_pages",
     "created_tmp_tables", "created_tmp_disk_tables", "tmp_disk_table_pct",
@@ -51,6 +53,9 @@ SPECS = [
         ("max_used_connections", "Max used", "#95a5a6")]),
     ("queries",      "Queries",         "per second", [
         ("queries_per_sec", "Queries/s", "#3498db"), ("questions_per_sec", "Questions/s", "#e67e22")]),
+    ("client_commands", "Client commands", "per second", [
+        ("com_select_per_sec", "SELECT/s", "#3498db"), ("com_insert_per_sec", "INSERT/s", "#2ecc71"),
+        ("com_update_per_sec", "UPDATE/s", "#f39c12"), ("com_delete_per_sec", "DELETE/s", "#e74c3c")]),
     ("slow_queries", "Slow queries",    "count", [
         ("slow_queries_delta", "Slow delta", "#e74c3c"), ("slow_queries_total", "Slow total", "#95a5a6")]),
     ("buffer_pool",  "InnoDB buffer pool", "MB", [

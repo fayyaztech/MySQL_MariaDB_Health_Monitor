@@ -36,7 +36,9 @@ COLUMNS = [
     "ram_used_mb", "ram_free_mb", "swap_used_mb",
     "disk_read_mbps", "disk_write_mbps",
     "threads_connected", "threads_running", "max_used_connections", "max_connections",
-    "questions_per_sec", "queries_per_sec", "slow_queries_total", "slow_queries_delta",
+    "questions_per_sec", "queries_per_sec",
+    "com_select_per_sec", "com_insert_per_sec", "com_update_per_sec", "com_delete_per_sec",
+    "slow_queries_total", "slow_queries_delta",
     "bytes_received_kbs", "bytes_sent_kbs",
     "buffer_pool_used_mb", "buffer_pool_free_mb", "buffer_pool_dirty_pages",
     "created_tmp_tables", "created_tmp_disk_tables", "tmp_disk_table_pct",
@@ -45,6 +47,15 @@ COLUMNS = [
 ]
 
 LIVE_PATH = "live.json"
+
+# Per-command-type counters (Com_%). These exclude server-internal statements,
+# so their per-second deltas reflect real client traffic (unlike `Queries`).
+COM_COUNTERS = [
+    ("com_select_per_sec", "Com_select"),
+    ("com_insert_per_sec", "Com_insert"),
+    ("com_update_per_sec", "Com_update"),
+    ("com_delete_per_sec", "Com_delete"),
+]
 
 
 def now_str():
@@ -279,6 +290,10 @@ def collect(conn, sysmon, prev_status, prev_time, variables):
         "max_connections": _int(variables.get("max_connections")),
         "questions_per_sec": round(rate(prev_status, status, "Questions", elapsed), 1),
         "queries_per_sec": round(rate(prev_status, status, "Queries", elapsed), 1),
+        **{
+            out: round(rate(prev_status, status, key, elapsed), 1)
+            for out, key in COM_COUNTERS
+        },
         "slow_queries_total": _int(status.get("Slow_queries")),
         "slow_queries_delta": _int(rate(prev_status, status, "Slow_queries", elapsed) * elapsed),
         "bytes_received_kbs": round(rate(prev_status, status, "Bytes_received", elapsed) / 1024, 1),
