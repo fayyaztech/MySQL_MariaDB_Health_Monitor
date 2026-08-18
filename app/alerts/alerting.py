@@ -16,7 +16,15 @@ import logging
 from sqlalchemy import func, select
 
 from app.config import get_settings
-from app.models import Alert, InnoDBMetrics, MySqlServer, QueryStats, SystemMetrics
+from app.models import (
+    Alert,
+    InnoDBMetrics,
+    MySqlServer,
+    PM2Event,
+    PM2ProcessMetrics,
+    QueryStats,
+    SystemMetrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +97,63 @@ def evaluate(session, conn) -> int:
         fired += _fire(session, active, "slow_query",
                        f"Slow query avg {avg / 1000:.1f}s: {row.query_text[:120]}",
                        avg, settings.alert_slow_query_ms, "warning")
+
+    # PM2 process health (if the pm2 collector is active)
+    try:
+        fired += fire_pm2_alerts(session)
+    except Exception:  # pragma: no cover - best effort
+        logger.exception("pm2 alert evaluation failed")
+
+    session.flush()
+    return fired
+
+
+def fire_pm2_alerts(session) -> int:
+    """Alert on PM2 lifecycle problems from the latest poll.
+
+    Alert types embed the process name so each app is deduplicated separately.
+    """
+    settings = get_settings()
+    active = _active_types(session)
+    fired = 0
+    session.flush()  # surface metrics/events written earlier in the same session
+
+    # Lifecycle events written by the pm2 collector (recent window).
+    from datetime import datetime, timedelta
+    since = datetime.utcnow() - timedelta(seconds=max(settings.pm2_interval * 2, 120))
+    events = session.execute(
+        select(PM2Event).where(PM2Event.timestamp >= since)
+        .order_by(PM2Event.timestamp.desc()).limit(50)
+    ).scalars().all()
+    for ev in events:
+        if ev.event_type in ("crash", "stopped", "errored"):
+            fired += _fire(session, active, f"pm2_{ev.event_type}:{ev.process_name}",
+                           f"{ev.process_name} {ev.event_type}: {ev.detail}",
+                           1, 1, "critical")
+        elif ev.event_type == "restart":
+            fired += _fire(session, active, f"pm2_restart:{ev.process_name}",
+                           f"{ev.process_name} restarted: {ev.detail}",
+                           1, 1, "warning")
+
+    # Processes currently offline (last snapshot per app).
+    latest_names = session.execute(
+        select(PM2ProcessMetrics.name).distinct()
+    ).scalars().all()
+    for name in latest_names:
+        latest = session.scalar(
+            select(PM2ProcessMetrics).where(PM2ProcessMetrics.name == name)
+            .order_by(PM2ProcessMetrics.timestamp.desc()).limit(1)
+        )
+        if latest is None:
+            continue
+        if latest.status != "online":
+            fired += _fire(session, active, f"pm2_process_down:{name}",
+                           f"{name} is {latest.status} (pid {latest.pid or '—'})",
+                           1, 1, "critical")
+        if latest.mysql_connections >= settings.pm2_pool_size:
+            fired += _fire(session, active, f"pm2_pool_warn:{name}",
+                           f"{name} MySQL pool exhausted: {latest.mysql_connections}/{settings.pm2_pool_size} connections",
+                           latest.mysql_connections, settings.pm2_pool_size, "critical")
 
     session.flush()
     return fired

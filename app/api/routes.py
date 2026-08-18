@@ -20,9 +20,12 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db, get_session_factory
+from app.diagnose import registry
 from app.models import (
     Alert,
     MySqlServer,
+    PM2Event,
+    PM2ProcessMetrics,
     Recommendation,
     Report,
     SystemMetrics,
@@ -304,6 +307,111 @@ def api_reports(_: None = Depends(require_key), db: Session = Depends(get_db)):
              "created_at": r.created_at} for r in rows]
 
 
+# --- PM2 endpoints ----------------------------------------------------------
+
+def _pm2_live() -> list[dict]:
+    """Current PM2 process state from the local pm2 daemon (best-effort)."""
+    from app.config import get_settings
+    from app.pm2_utils import count_mysql_connections, parse_jlist
+
+    settings = get_settings()
+    include = {a for a in settings.pm2_apps} if settings.pm2_apps else None
+    out = []
+    for p in parse_jlist():
+        if include is not None and p["name"] not in include:
+            continue
+        p["mysql_connections"] = count_mysql_connections(p["pid"], settings.pm2_mysql_port)
+        out.append(p)
+    return out
+
+
+@router.get("/api/pm2/processes")
+def api_pm2_processes(_: None = Depends(require_key)):
+    from app.config import get_settings
+    settings = get_settings()
+    return {"processes": _pm2_live(), "pool_size": settings.pm2_pool_size,
+            "enabled": settings.pm2_enabled}
+
+
+@router.get("/api/pm2/history")
+def api_pm2_history(name: str = Query(..., description="PM2 app name"),
+                    limit: int = Query(200, le=2000),
+                    _: None = Depends(require_key), db: Session = Depends(get_db)):
+    rows = db.execute(
+        select(PM2ProcessMetrics).where(PM2ProcessMetrics.name == name)
+        .order_by(PM2ProcessMetrics.timestamp.desc()).limit(limit)
+    ).scalars().all()
+    return [{
+        "timestamp": _iso(r.timestamp), "status": r.status, "cpu": r.cpu,
+        "memory_rss": r.memory_rss, "memory_heap": r.memory_heap,
+        "loop_delay": r.loop_delay, "uptime_ms": r.uptime_ms,
+        "restarts": r.restarts, "mysql_connections": r.mysql_connections,
+    } for r in reversed(rows)]
+
+
+@router.get("/api/pm2/logs")
+def api_pm2_logs(name: str = Query(...), stream: str = Query("out", pattern="^(out|error)$"),
+                 lines: int = Query(200, ge=1, le=5000),
+                 _: None = Depends(require_key)):
+    from app.pm2_utils import tail_lines
+    settings = get_settings()
+
+    path = None
+    for p in _pm2_live():
+        if p["name"] == name:
+            path = p["error_log" if stream == "error" else "out_log"]
+            break
+    if path is None:
+        path = f"{settings.pm2_log_dir}/{name}-{stream}-0.log"
+
+    entries = tail_lines(path, lines)
+    return {"process": name, "stream": stream, "path": path,
+            "lines": entries, "count": len(entries)}
+
+
+@router.get("/api/pm2/events")
+def api_pm2_events(from_: str = Query(None, alias="from"),
+                   to_: str = Query(None, alias="to"),
+                   _: None = Depends(require_key), db: Session = Depends(get_db)):
+    stmt = select(PM2Event).order_by(PM2Event.timestamp.desc()).limit(500)
+    if from_ := _parse_dt(from_):
+        stmt = stmt.where(PM2Event.timestamp >= from_)
+    if to := _parse_dt(to_):
+        stmt = stmt.where(PM2Event.timestamp <= to)
+    rows = db.scalars(stmt).all()
+    return [{"id": e.id, "process_name": e.process_name, "event_type": e.event_type,
+             "detail": e.detail, "timestamp": e.timestamp} for e in rows]
+
+
+@router.post("/api/pm2/diagnose")
+def api_pm2_diagnose(app: str = Query(...),
+                     _: None = Depends(require_key)):
+    settings = get_settings()
+    if not settings.pm2_diagnose_enabled:
+        raise HTTPException(status_code=403, detail="PM2 diagnostics disabled")
+    from app.diagnostics import run_diagnostic
+    # Pass the monitor's DB credentials so the MySQL sections run non-interactively.
+    db_env = {
+        "host": settings.mysql_host,
+        "user": settings.mysql_user,
+        "password": settings.mysql_password,
+        "database": settings.mysql_database,
+    }
+    job = registry.start(app, run_diagnostic, args=(app,), kwargs={"db_env": db_env})
+    return {"job_id": job.id, "app": app, "started": True}
+
+
+@router.get("/api/pm2/diagnose/{job_id}")
+def api_pm2_diagnose_status(job_id: str, _: None = Depends(require_key)):
+    job = registry.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown diagnostic job")
+    return {
+        "job_id": job.id, "done": job.done, "returncode": job.returncode,
+        "output": job.read(),
+    }
+
+
 # --- Dashboard pages ---------------------------------------------------------
 
 @router.get("/login", response_class=HTMLResponse)
@@ -343,3 +451,11 @@ def logs_page(request: Request):
     if redir is not None:
         return redir
     return templates.TemplateResponse(request, "logs.html", {})
+
+
+@router.get("/pm2", response_class=HTMLResponse)
+def pm2_page(request: Request):
+    redir = _require_session(request)
+    if redir is not None:
+        return redir
+    return templates.TemplateResponse(request, "pm2.html", {})

@@ -1,0 +1,321 @@
+{% extends "base.html" %}
+{% block title %}PM2 — MySQL Profiler{% endblock %}
+{% block content %}
+<h2 class="text-xl font-bold text-slate-100 mb-4">PM2 Process Monitor</h2>
+
+<!-- Tabs -->
+<div class="flex flex-wrap gap-2 mb-6">
+    <button class="tab-btn active" data-tab="processes">Processes</button>
+    <button class="tab-btn" data-tab="logs">Logs</button>
+    <button class="tab-btn" data-tab="events">Events</button>
+    <button class="tab-btn" data-tab="diagnose">Diagnose</button>
+    <span id="pm2-msg" class="text-xs text-slate-500 self-center ml-auto"></span>
+</div>
+
+<!-- Processes tab -->
+<div id="tab-processes" class="tab-panel">
+    <div id="proc-grid" class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6"></div>
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-3 mb-6">
+        <div class="flex items-center gap-3 mb-2 flex-wrap">
+            <h3 class="text-xs font-semibold text-slate-300">Process History</h3>
+            <select id="hist-select" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm text-slate-200"></select>
+        </div>
+        <div id="hist-chart" class="w-full h-72"></div>
+    </div>
+</div>
+
+<!-- Logs tab -->
+<div id="tab-logs" class="tab-panel hidden">
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4 mb-4">
+        <div class="flex flex-wrap items-end gap-3">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Process</label>
+                <select id="log-proc" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200"></select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Stream</label>
+                <select id="log-stream" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200">
+                    <option value="out">Output</option>
+                    <option value="error">Error</option>
+                </select>
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Lines</label>
+                <input id="log-lines" type="number" value="200" min="50" max="2000" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200 w-24">
+            </div>
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Filter</label>
+                <input id="log-filter" type="text" placeholder="search…" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200">
+            </div>
+            <button id="log-live-btn" class="px-4 py-2 rounded text-sm font-medium bg-emerald-600 text-white hover:bg-emerald-500 ml-auto">● Live</button>
+        </div>
+        <p id="log-path" class="text-xs text-slate-500 mt-2 font-mono"></p>
+    </div>
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4">
+        <pre id="log-output" class="text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-[60vh] overflow-y-auto"></pre>
+    </div>
+</div>
+
+<!-- Events tab -->
+<div id="tab-events" class="tab-panel hidden">
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4">
+        <h3 class="text-sm font-semibold text-slate-200 mb-3">PM2 Lifecycle Events <span id="ev-count" class="text-slate-500 font-normal text-xs"></span></h3>
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead><tr class="text-left text-slate-400">
+                    <th class="py-2 pr-3 font-medium">Time</th>
+                    <th class="py-2 pr-3 font-medium">Process</th>
+                    <th class="py-2 pr-3 font-medium">Event</th>
+                    <th class="py-2 font-medium">Detail</th>
+                </tr></thead>
+                <tbody id="events-body">
+                    <tr><td colspan="4" class="py-6 text-center text-slate-500">Loading…</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Diagnose tab -->
+<div id="tab-diagnose" class="tab-panel hidden">
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4 mb-4">
+        <div class="flex flex-wrap items-end gap-3">
+            <div>
+                <label class="block text-xs text-slate-400 mb-1">Process</label>
+                <select id="diag-proc" class="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200"></select>
+            </div>
+            <button id="diag-run" class="px-4 py-2 rounded text-sm font-medium bg-rose-600 text-white hover:bg-rose-500">Run diagnostic</button>
+        </div>
+        <p class="text-xs text-slate-500 mt-2">Runs a full Python diagnostic on the host (host, port, app root and DB credentials auto-resolved from the app name). Takes ~1 minute (10 HTTP probes + iostat).</p>
+    </div>
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4">
+        <pre id="diag-output" class="text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-[70vh] overflow-y-auto">Run a diagnostic to see output here.</pre>
+    </div>
+</div>
+
+<script>
+const EV_COLOR = { crash: '#f43f5e', restart: '#f59e0b', stopped: '#64748b',
+    errored: '#f43f5e', online: '#10b981', pool_warn: '#f59e0b' };
+const LAYOUT = { paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    font: { color: '#94a3b8' }, margin: { l: 40, r: 40, t: 10, b: 30 },
+    xaxis: { showgrid: false, zeroline: false },
+    yaxis: { showgrid: true, gridcolor: 'rgba(148,163,184,0.15)', zeroline: false } };
+const CONFIG = { displayModeBar: false, responsive: true };
+
+let poolSize = 5;
+let procs = [];
+let histTimer = null;
+let logTimer = null;
+let diagTimer = null;
+
+// --- Tabs ---
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
+    });
+});
+
+function fmtUptime(ms) {
+    if (!ms) return '—';
+    const s = Math.floor(ms / 1000);
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+          m = Math.floor((s % 3600) / 60);
+    if (d) return `${d}d ${h}h`;
+    if (h) return `${h}h ${m}m`;
+    if (m) return `${m}m`;
+    return `${s}s`;
+}
+function fmtMem(b) {
+    if (!b) return '—';
+    return (b / 1048576).toFixed(1) + ' MB';
+}
+
+function statusBadge(s) {
+    const m = { online: ['bg-emerald-500/20 text-emerald-300', '● online'],
+        stopped: ['bg-slate-600/30 text-slate-400', '■ stopped'],
+        errored: ['bg-rose-500/20 text-rose-300', '✕ errored'],
+        launching: ['bg-sky-500/20 text-sky-300', '◌ launching'],
+        'one-launch-status': ['bg-sky-500/20 text-sky-300', '◌ launching'] };
+    const [cls, txt] = m[s] || ['bg-slate-600/30 text-slate-400', s];
+    return `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${cls}">${txt}</span>`;
+}
+
+function procCard(p) {
+    const loopCls = p.loop_delay > 50 ? 'text-rose-400 font-bold' : p.loop_delay > 20 ? 'text-amber-400' : 'text-slate-300';
+    const connPct = poolSize ? Math.min(100, Math.round(p.mysql_connections / poolSize * 100)) : 0;
+    const connCls = connPct >= 100 ? 'bg-rose-500' : connPct >= 70 ? 'bg-amber-500' : 'bg-emerald-500';
+    return `
+    <div class="rounded-lg bg-slate-800/70 border border-slate-700 p-4">
+        <div class="flex items-start justify-between gap-2">
+            <div>
+                <div class="font-semibold text-slate-100">${p.name}</div>
+                <div class="text-xs text-slate-500 mt-0.5">pid ${p.pid || '—'} · pm_id ${p.pm_id ?? '—'} · restarts ${p.restarts}</div>
+            </div>
+            ${statusBadge(p.status)}
+        </div>
+        <div class="grid grid-cols-2 gap-3 mt-4 text-sm">
+            <div><div class="text-xs text-slate-500">CPU</div><div class="text-slate-200 font-mono">${p.cpu.toFixed(1)}%</div></div>
+            <div><div class="text-xs text-slate-500">RSS / Heap</div><div class="text-slate-200 font-mono">${fmtMem(p.memory_rss)} / ${fmtMem(p.memory_heap)}</div></div>
+            <div><div class="text-xs text-slate-500">Loop delay</div><div class="font-mono ${loopCls}">${p.loop_delay.toFixed(1)}ms</div></div>
+            <div><div class="text-xs text-slate-500">Uptime</div><div class="text-slate-200 font-mono">${fmtUptime(p.uptime_ms)}</div></div>
+        </div>
+        <div class="mt-4">
+            <div class="flex justify-between text-xs mb-1">
+                <span class="text-slate-500">MySQL connections</span>
+                <span class="font-mono ${connPct >= 100 ? 'text-rose-400 font-bold' : 'text-slate-300'}">${p.mysql_connections}/${poolSize}</span>
+            </div>
+            <div class="h-2 rounded bg-slate-700 overflow-hidden">
+                <div class="h-full ${connCls} transition-all" style="width:${connPct}%"></div>
+            </div>
+        </div>
+    </div>`;
+}
+
+async function refreshProcs() {
+    const r = await fetch('/api/pm2/processes').then(r => r.json());
+    procs = r.processes || [];
+    poolSize = r.pool_size || 5;
+    document.getElementById('pm2-msg').textContent =
+        r.enabled ? `${procs.length} process(es) tracked` : 'PM2 tracking disabled (set PM2_ENABLED=true)';
+    document.getElementById('proc-grid').innerHTML = procs.length
+        ? procs.map(procCard).join('')
+        : '<div class="col-span-full text-center text-slate-500 py-10">No PM2 processes found.</div>';
+    const sel = document.getElementById('hist-select');
+    const cur = sel.value;
+    sel.innerHTML = procs.map(p => `<option value="${p.name}" ${p.name === cur ? 'selected' : ''}>${p.name}</option>`).join('');
+    fillProcessSelects();
+    refreshHistory();
+}
+
+function fillProcessSelects() {
+    ['log-proc', 'diag-proc'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (sel.options.length !== procs.length) {
+            const cur = sel.value;
+            sel.innerHTML = procs.map(p => `<option value="${p.name}" ${p.name === cur ? 'selected' : ''}>${p.name}</option>`).join('');
+        }
+    });
+}
+
+async function refreshHistory() {
+    const name = document.getElementById('hist-select').value;
+    if (!name) return;
+    const rows = await fetch('/api/pm2/history?name=' + encodeURIComponent(name)).then(r => r.json());
+    const x = rows.map(r => r.timestamp);
+    Plotly.react('hist-chart', [
+        { x, y: rows.map(r => r.cpu), mode: 'lines', name: 'CPU %', line: { color: '#22d3ee', width: 1.5 }, yaxis: 'y' },
+        { x, y: rows.map(r => r.mysql_connections), mode: 'lines', name: 'MySQL conns', line: { color: '#f43f5e', width: 1.5 }, yaxis: 'y2' },
+        { x, y: rows.map(r => r.loop_delay), mode: 'lines', name: 'Loop delay ms', line: { color: '#fbbf24', width: 1.5 }, yaxis: 'y2' },
+    ], Object.assign({}, LAYOUT, {
+        yaxis2: { title: '', overlaying: 'y', side: 'right', showgrid: false,
+            gridcolor: 'rgba(148,163,184,0.15)', zeroline: false },
+        legend: { orientation: 'h', y: 1.1 },
+    }), CONFIG);
+}
+
+// --- Logs ---
+function applyFilter() {
+    const kw = document.getElementById('log-filter').value.toLowerCase();
+    document.getElementById('log-output').querySelectorAll('.log-line').forEach(span => {
+        span.style.display = !kw || span.textContent.toLowerCase().includes(kw) ? '' : 'none';
+    });
+}
+
+async function refreshLogs() {
+    const name = document.getElementById('log-proc').value;
+    const stream = document.getElementById('log-stream').value;
+    const lines = document.getElementById('log-lines').value || 200;
+    const r = await fetch(`/api/pm2/logs?name=${encodeURIComponent(name)}&stream=${stream}&lines=${lines}`).then(r => r.json());
+    document.getElementById('log-path').textContent = r.path || '';
+    const out = document.getElementById('log-output');
+    out.innerHTML = r.lines.length
+        ? r.lines.map(l => `<span class="log-line block">${escapeHtml(l)}</span>`).join('')
+        : '<span class="text-slate-500">No log lines found.</span>';
+    out.scrollTop = out.scrollHeight;
+    applyFilter();
+}
+
+// --- Events ---
+async function refreshEvents() {
+    const rows = await fetch('/api/pm2/events').then(r => r.json());
+    const body = document.getElementById('events-body');
+    document.getElementById('ev-count').textContent = `(${rows.length})`;
+    if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-500">No events recorded.</td></tr>';
+        return;
+    }
+    body.innerHTML = rows.map(e => `
+        <tr class="border-t border-slate-700">
+            <td class="py-2 pr-3 text-slate-400 whitespace-nowrap">${new Date(e.timestamp).toLocaleString()}</td>
+            <td class="py-2 pr-3 text-slate-300">${e.process_name}</td>
+            <td class="py-2 pr-3"><span class="px-2 py-0.5 rounded text-xs font-medium" style="color:${EV_COLOR[e.event_type] || '#e2e8f0'}">${e.event_type}</span></td>
+            <td class="py-2 text-slate-300">${escapeHtml(e.detail)}</td>
+        </tr>`).join('');
+}
+
+// --- Diagnose ---
+async function runDiagnose() {
+    const name = document.getElementById('diag-proc').value;
+    const btn = document.getElementById('diag-run');
+    btn.disabled = true; btn.textContent = 'Running…';
+    const out = document.getElementById('diag-output');
+    out.textContent = 'Starting diagnostic…';
+    const r = await fetch(`/api/pm2/diagnose?app=${encodeURIComponent(name)}`).then(r => r.json());
+    pollDiagnose(r.job_id);
+}
+
+async function pollDiagnose(jobId) {
+    const out = document.getElementById('diag-output');
+    const r = await fetch('/api/pm2/diagnose/' + jobId).then(r => r.json());
+    out.textContent = r.output || '(no output yet)';
+    out.scrollTop = out.scrollHeight;
+    if (!r.done) {
+        diagTimer = setTimeout(() => pollDiagnose(jobId), 2000);
+    } else {
+        const btn = document.getElementById('diag-run');
+        btn.disabled = false; btn.textContent = 'Run diagnostic';
+        diagTimer = null;
+        if (r.returncode !== 0) out.textContent += '\n[diagnostic finished with errors]';
+    }
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// --- Wiring + poll loop ---
+document.getElementById('hist-select').addEventListener('change', refreshHistory);
+document.getElementById('log-proc').addEventListener('change', refreshLogs);
+document.getElementById('log-stream').addEventListener('change', refreshLogs);
+document.getElementById('log-lines').addEventListener('change', refreshLogs);
+document.getElementById('log-filter').addEventListener('input', applyFilter);
+document.getElementById('diag-run').addEventListener('click', runDiagnose);
+
+function setLogLive(on) {
+    const btn = document.getElementById('log-live-btn');
+    btn.className = 'px-4 py-2 rounded text-sm font-medium ml-auto ' +
+        (on ? 'bg-emerald-600 text-white hover:bg-emerald-500' : 'bg-slate-600 text-slate-200 hover:bg-slate-500');
+    btn.textContent = on ? '● Live' : '○ Paused';
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+    if (on) logTimer = setInterval(refreshLogs, 5000);
+    refreshLogs();
+}
+document.getElementById('log-live-btn').addEventListener('click', () => setLogLive(document.getElementById('log-live-btn').textContent.includes('Paused')));
+
+setLogLive(true);
+refreshProcs();
+setInterval(refreshProcs, 5000);
+setInterval(refreshEvents, 10000);
+</script>
+<style>
+.tab-btn { padding: 0.35rem 0.9rem; font-size: 0.8rem; font-weight: 500; color: #94a3b8;
+    border-radius: 0.5rem; background: rgba(30,41,59,0.7); border: 1px solid #334155; cursor: pointer; }
+.tab-btn.active { background: #6366f1; color: #fff; border-color: #6366f1; }
+.tab-btn:hover:not(.active) { color: #e2e8f0; }
+#hist-chart, .plotly { width: 100%; }
+</style>
+{% endblock %}

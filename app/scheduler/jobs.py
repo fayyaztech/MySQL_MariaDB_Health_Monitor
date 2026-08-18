@@ -100,6 +100,16 @@ def build_scheduler() -> BackgroundScheduler:
             coalesce=True,
             replace_existing=True,
         )
+    if settings.pm2_enabled and "pm2" in COLLECTORS:
+        scheduler.add_job(
+            _collect,
+            args=["pm2"],
+            trigger=IntervalTrigger(seconds=settings.pm2_interval),
+            id="collect-pm2",
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
     if "analyze" in COLLECTORS:
         scheduler.add_job(
             _collect,

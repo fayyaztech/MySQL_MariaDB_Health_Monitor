@@ -1,7 +1,10 @@
 """Central configuration, loaded from environment variables via pydantic-settings."""
+import json
 from functools import lru_cache
+from typing import Annotated
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -30,6 +33,31 @@ class Settings(BaseSettings):
     mysql_interval: int = 60
     analyze_interval: int = 3600
     report_hour: int = 2  # hour-of-day (0-23) for the daily report
+
+    # --- PM2 process tracking ---
+    pm2_enabled: bool = False          # requires pm2 on the local host
+    pm2_interval: int = 60             # cadence for PM2 process polls
+    pm2_log_dir: str = "~/.pm2/logs"   # where PM2 writes out/error logs
+    pm2_log_lines: int = 200           # default lines returned by the log viewer
+    pm2_pool_size: int = 5             # app connection pool size (pool_exhausted threshold)
+    pm2_apps: Annotated[list[str], NoDecode] = []  # empty = track all PM2 apps
+    pm2_mysql_port: int = 3306         # port used to count app->MySQL connections
+    pm2_diagnose_enabled: bool = True  # expose the "Run diagnostic" action on the PM2 page
+
+    @field_validator("pm2_apps", mode="before")
+    @classmethod
+    def _parse_pm2_apps(cls, value):
+        """Accept comma-separated ('a,b,c') or JSON ('["a","b"]') env values."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return []
+            if value.startswith("["):
+                return json.loads(value)
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
 
     # --- Alert thresholds ---
     alert_cpu_high: float = 90.0

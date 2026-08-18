@@ -138,3 +138,34 @@ class Report(Base):
     filename: Mapped[str] = mapped_column(String(255))
     health_score: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class PM2ProcessMetrics(Base):
+    """Per-poll snapshot of a PM2-managed process (jlist + OS introspection)."""
+    __tablename__ = "pm2_process_metrics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    pm_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    pid: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="unknown")
+    cpu: Mapped[float] = mapped_column(Float, default=0.0)
+    memory_rss: Mapped[int] = mapped_column(Integer, default=0)
+    memory_heap: Mapped[int] = mapped_column(Integer, default=0)
+    loop_delay: Mapped[float] = mapped_column(Float, default=0.0)
+    uptime_ms: Mapped[int] = mapped_column(Integer, default=0)
+    restarts: Mapped[int] = mapped_column(Integer, default=0)
+    unstable_restarts: Mapped[int] = mapped_column(Integer, default=0)
+    mysql_connections: Mapped[int] = mapped_column(Integer, default=0)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class PM2Event(Base):
+    """PM2 lifecycle events: crash / restart / status change / pool warning."""
+    __tablename__ = "pm2_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    process_name: Mapped[str] = mapped_column(String(128), index=True)
+    event_type: Mapped[str] = mapped_column(String(32))  # crash|restart|stopped|errored|online|pool_warn
+    detail: Mapped[str] = mapped_column(Text)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
